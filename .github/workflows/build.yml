@@ -83,9 +83,6 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
           Get-Item dist/TabloViewer.exe, dist/TabloViewer-portable.zip | Format-Table Name, Length
 
-      - name: Make test.exe (identical copy of TabloViewer.exe)
-        run: Copy-Item dist/TabloViewer.exe dist/test.exe
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -93,7 +90,6 @@ jobs:
           path: |
             dist/TabloViewer.exe
             dist/TabloViewer-portable.zip
-            dist/test.exe
 
       - name: Publish to the "latest" release
         env:
@@ -104,11 +100,10 @@ jobs:
 
           - **TabloViewer.exe**: single file, just run it. Nothing to install.
           - **TabloViewer-portable.zip**: same app as a folder; starts faster. Unzip and run TabloViewer.exe inside.
-          - **test.exe**: an identical copy of TabloViewer.exe under a different name.
 
           Unofficial. Not affiliated with Tablo, Nuvyyo or Scripps. Includes mpv (GPL) from shinchiro/mpv-winbuild-cmake.
           "@
           gh release delete latest --yes --cleanup-tag 2>$null
           $global:LASTEXITCODE = 0
-          gh release create latest dist/TabloViewer.exe dist/TabloViewer-portable.zip dist/test.exe `
+          gh release create latest dist/TabloViewer.exe dist/TabloViewer-portable.zip `
             --title "Tablo Viewer (latest build)" --notes $notes --target $env:GITHUB_SHA
