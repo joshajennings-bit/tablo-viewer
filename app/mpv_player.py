@@ -35,6 +35,11 @@ UP              script-message tv channel-up
 DOWN            script-message tv channel-down
 PGUP            script-message tv channel-up
 PGDWN           script-message tv channel-down
+c               script-message tv captions
+C               script-message tv captions
+j               script-message tv captions
+J               script-message tv captions
+v               script-message tv captions
 LEFT            seek -10
 RIGHT           seek 30
 WHEEL_UP        add volume 5
@@ -45,7 +50,7 @@ CLOSE_WIN       ignore
 """
 
 OBSERVED = ["pause", "volume", "mute", "paused-for-cache", "idle-active",
-            "video-params/w", "video-params/h", "demuxer-cache-duration"]
+            "video-params/w", "video-params/h", "demuxer-cache-duration", "sid"]
 
 
 class _Conn:
@@ -118,6 +123,7 @@ class MpvPlayer:
             "--input-default-bindings=yes",
             "--keep-open=no",
             "--deinterlace=yes",
+            "--sid=no",  # closed captions start off; the app turns them on when asked
             "--hwdec=auto-safe",
             "--cache=yes",
             "--demuxer-max-bytes=150MiB",
@@ -178,9 +184,10 @@ class MpvPlayer:
         if self.running:
             self._cmd_q.put(list(args))
 
-    def play(self, url: str, title: str = "") -> None:
+    def play(self, url: str, title: str = "", captions: bool = False) -> None:
         if title:
             self.command("set_property", "force-media-title", title)
+        self.set_captions(captions)  # applies to the stream about to load
         self.command("loadfile", url, "replace")
         self.command("set_property", "pause", False)
 
@@ -189,6 +196,10 @@ class MpvPlayer:
 
     def set_volume(self, v: float) -> None:
         self.command("set_property", "volume", max(0, min(130, round(v))))
+
+    def set_captions(self, on: bool) -> None:
+        """Closed captions on ("auto" picks the caption track) or off."""
+        self.command("set_property", "sid", "auto" if on else "no")
 
     def set_osc(self, visible: bool) -> None:
         self.command("script-message", "osc-visibility", "auto" if visible else "never", "no_osd")

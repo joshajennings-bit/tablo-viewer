@@ -29,6 +29,7 @@ app isn't code-signed. Click **More info → Run anyway**.
 | ↑ / ↓ | Channel up / down |
 | + / − or mouse wheel | Volume |
 | M | Mute |
+| C | Closed captions on / off (off by default) |
 | L | Jump back to live |
 | F, F11 or double-click | Fullscreen (video only) |
 | Esc | Leave fullscreen |

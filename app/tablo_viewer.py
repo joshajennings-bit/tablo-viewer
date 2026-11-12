@@ -14,6 +14,7 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +26,7 @@ from mpv_player import MpvPlayer
 from tablo_client import Airing, Channel, Device, TabloAuthError, TabloError, TabloSession
 
 APP_NAME = "Tablo Viewer"
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged TabloViewer.exe
 APP_DIR = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))  # where PyInstaller unpacked bundled files
@@ -490,9 +491,12 @@ class App(tk.Tk):
         self.playing: Channel | None = None
         self.tune_req = 0
         self._start_lock = threading.Lock()
+        self._loaded_at = 0.0
+        self._sid = None
         self.fullscreen = False
         self.ps = {"pause": False, "volume": float(self.cfg.get("volume", 80)), "mute": False,
-                      "buffering": False, "idle": True, "ahead": 0.0}
+                      "buffering": False, "idle": True, "ahead": 0.0,
+                      "captions": False}  # closed captions always start off
 
         self._build()
         self._render_nowbar()
@@ -650,6 +654,12 @@ class App(tk.Tk):
         self.vol.pack(side="right", padx=(0, 6))
         self.mute_btn = IconButton(right, "vol", self.toggle_mute, size=14)
         self.mute_btn.pack(side="right")
+        tk.Frame(right, bg=BORDER, width=1, height=24).pack(side="right", padx=8)
+        self.cc_btn = tk.Label(right, text="CC", font=(FONT_SEMI, 9), padx=7, pady=2, cursor="hand2",
+                               highlightthickness=1)
+        self.cc_btn.pack(side="right")
+        self.cc_btn.bind("<Button-1>", lambda e: self.toggle_captions())
+        self._render_captions()
         self.status = tk.Label(cb, text="", bg=PANEL, fg=DIM, font=(FONT, 9))
         self.status.pack(side="right", padx=16)
         self._render_volume()
@@ -1005,7 +1015,8 @@ class App(tk.Tk):
             if req != self.tune_req:
                 return
             log.info("Playing %s", ch.identifier)
-            player.play(url, title)
+            self._loaded_at = time.monotonic()
+            player.play(url, title, captions=self.ps["captions"])
             player.set_osc(self.fullscreen)
             if self.ps["mute"]:
                 player.command("set_property", "mute", True)
@@ -1069,6 +1080,20 @@ class App(tk.Tk):
             self.player.set_volume(self.ps["volume"])
         self._render_volume()
 
+    def toggle_captions(self, value: bool | None = None):
+        self.ps["captions"] = (not self.ps["captions"]) if value is None else value
+        self._loaded_at = 0.0  # a deliberate choice; don't override it
+        if self.player:
+            self.player.set_captions(self.ps["captions"])
+            if self.playing:
+                self.player.show_text("Captions on" if self.ps["captions"] else "Captions off", 1200)
+        self._render_captions()
+
+    def _render_captions(self):
+        on = self.ps["captions"]
+        self.cc_btn.config(bg=ACCENT if on else PANEL, fg="#ffffff" if on else MUTED,
+                           highlightbackground=ACCENT if on else DIM)
+
     def toggle_mute(self):
         self.ps["mute"] = not self.ps["mute"]
         if self.player:
@@ -1128,6 +1153,23 @@ class App(tk.Tk):
                     self.set_status("")
             elif name == "demuxer-cache-duration":
                 self.ps["ahead"] = float(data or 0)
+            elif name == "sid":
+                # mpv reports False when captions are off, a track number when on.
+                # Keep the button honest if mpv's own controls changed it.
+                showing = data not in (False, None, "no")
+                was_showing = self._sid not in (False, None, "no")
+                self._sid = data
+                just_tuned = time.monotonic() - self._loaded_at < 20
+                if showing and not self.ps["captions"]:
+                    if just_tuned:
+                        if self.player:
+                            self.player.set_captions(False)  # stream switched them on by itself
+                    else:
+                        self.ps["captions"] = True  # turned on from mpv's on-screen controls
+                        self._render_captions()
+                elif not showing and was_showing and self.ps["captions"] and not just_tuned:
+                    self.ps["captions"] = False  # turned off from mpv's on-screen controls
+                    self._render_captions()
             self._render_state()
         elif ev == "client-message":
             args = msg.get("args") or []
@@ -1135,7 +1177,8 @@ class App(tk.Tk):
                 {"fullscreen": lambda: self.toggle_fullscreen(),
                  "exit-fullscreen": lambda: self.toggle_fullscreen(False),
                  "channel-up": lambda: self.channel_step(-1),
-                 "channel-down": lambda: self.channel_step(1)}.get(args[1], lambda: None)()
+                 "channel-down": lambda: self.channel_step(1),
+                 "captions": lambda: self.toggle_captions()}.get(args[1], lambda: None)()
         elif ev == "end-file":
             if msg.get("reason") == "error":
                 log.warning("mpv end-file error: %s", msg)
@@ -1183,6 +1226,8 @@ class App(tk.Tk):
             self.set_volume(self.ps["volume"] + 5)
         elif k in ("minus", "KP_Subtract", "9"):
             self.set_volume(self.ps["volume"] - 5)
+        elif k in ("c", "C"):
+            self.toggle_captions()
         elif k in ("l", "L"):
             self.go_live()
         elif k == "F5":
@@ -1213,6 +1258,7 @@ class App(tk.Tk):
             "↑ / ↓        Channel up / down\n"
             "+ / −        Volume (or mouse wheel on the video)\n"
             "M            Mute\n"
+            "C            Closed captions on / off\n"
             "L            Jump to live\n"
             "F / F11      Fullscreen (or double-click the video)\n"
             "Esc          Leave fullscreen\n"
